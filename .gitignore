@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+
+# Data (don't push raw data to GitHub — use S3)
+data/raw/*.csv
+data/processed/*.csv
+
+# Model artifacts (stored in S3)
+models/*.pkl
+models/*.tar.gz
+models/kmeans_artifacts/
+model.tar.gz
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
