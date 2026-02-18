@@ -1,0 +1,7 @@
+boto3
+sagemaker
+pandas
+numpy
+scikit-learn
+mlxtend
+matplotlib
