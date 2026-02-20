@@ -1,18 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
-
 # # Step 5 — SageMaker Pipeline (Full Orchestration)
-# Chains preprocessing + KMeans training into one repeatable pipeline.
-
-# In[ ]:
-#!/usr/bin/env python
-# coding: utf-8
-# # Step 5 — SageMaker Pipeline (Full Orchestration)
-# Chains preprocessing + KMeans training into one repeatable pipeline.
-#!/usr/bin/env python
-# coding: utf-8
-# # Step 5 — SageMaker Pipeline (Full Orchestration)
-# Chains preprocessing + KMeans training into one repeatable pipeline.
+# Chains preprocessing + KMeans training + MBA rules into one repeatable pipeline.
 
 import sagemaker, boto3, time
 from sagemaker.workflow.pipeline import Pipeline
@@ -27,12 +16,10 @@ pipeline_sess = PipelineSession()
 BUCKET        = 'sagemaker-product-ap-south-1'
 
 # ── Step A: Preprocessing ─────────────────────────────────────────────────────
-# ml.t3.medium IS supported for processing jobs in ap-south-1
-# (confirmed working in step 02 — only training jobs reject t3)
 processor = SKLearnProcessor(
     framework_version='1.0-1',
     role=role,
-    instance_type='ml.t3.medium',      # <-- t3 is fine for processing jobs
+    instance_type='ml.t3.medium',
     instance_count=1,
     sagemaker_session=pipeline_sess
 )
@@ -40,7 +27,7 @@ processor = SKLearnProcessor(
 preprocessing_step = ProcessingStep(
     name='FeatureEngineering',
     processor=processor,
-    code='../scripts/preprocessing.py',
+    code='./scripts/preprocessing.py',
     inputs=[
         ProcessingInput(
             source=f's3://{BUCKET}/data/raw/',
@@ -49,7 +36,7 @@ preprocessing_step = ProcessingStep(
     ],
     outputs=[
         ProcessingOutput(
-            output_name='processed',   # explicit name so training step can reference it
+            output_name='processed',
             source='/opt/ml/processing/output',
             destination=f's3://{BUCKET}/data/processed/'
         )
@@ -57,13 +44,12 @@ preprocessing_step = ProcessingStep(
 )
 
 # ── Step B: KMeans Training ───────────────────────────────────────────────────
-# ml.m5.large required for training jobs in ap-south-1 (t3 not supported for training)
 estimator = SKLearn(
     entry_point='train_kmeans.py',
-    source_dir='../scripts/',
+    source_dir='./scripts/',
     framework_version='1.0-1',
     role=role,
-    instance_type='ml.m5.large',       # <-- m5 required for training jobs
+    instance_type='ml.m5.large',
     instance_count=1,
     hyperparameters={
         'n_clusters':   4,
@@ -83,10 +69,45 @@ training_step = TrainingStep(
     depends_on=[preprocessing_step]
 )
 
+# ── Step C: MBA Rules Generation ──────────────────────────────────────────────
+# Runs after KMeans so user_clusters.csv is already in S3
+mba_processor = SKLearnProcessor(
+    framework_version='1.0-1',
+    role=role,
+    instance_type='ml.t3.medium',
+    instance_count=1,
+    sagemaker_session=pipeline_sess,
+    base_job_name='hybrid-rec-mba'
+)
+
+mba_step = ProcessingStep(
+    name='MBArulesGeneration',
+    processor=mba_processor,
+    code='./scripts/03_mba_rules.py',
+    inputs=[
+        ProcessingInput(
+            source=f's3://{BUCKET}/data/raw/',
+            destination='/opt/ml/processing/input/raw'
+        ),
+        ProcessingInput(
+            source=f's3://{BUCKET}/models/kmeans_artifacts/',
+            destination='/opt/ml/processing/input/models'
+        ),
+    ],
+    outputs=[
+        ProcessingOutput(
+            output_name='mba_output',
+            source='/opt/ml/processing/output',
+            destination=f's3://{BUCKET}/models/'
+        )
+    ],
+    depends_on=[training_step]
+)
+
 # ── Assemble and run pipeline ─────────────────────────────────────────────────
 pipeline = Pipeline(
     name='HybridRecPipeline',
-    steps=[preprocessing_step, training_step],
+    steps=[preprocessing_step, training_step, mba_step],
     sagemaker_session=pipeline_sess
 )
 
@@ -96,7 +117,6 @@ print('Pipeline registered.')
 execution = pipeline.start()
 print(f'Execution started: {execution.arn}')
 
-# Poll with per-step status so failures are visible immediately
 sm = boto3.client('sagemaker', region_name='ap-south-1')
 print('Waiting for pipeline to complete...')
 
@@ -108,7 +128,6 @@ while True:
         break
     time.sleep(30)
 
-# Print per-step results
 print('\n── Step Results ──')
 steps = sm.list_pipeline_execution_steps(PipelineExecutionArn=execution.arn)
 for step in steps['PipelineExecutionSteps']:
@@ -118,5 +137,6 @@ for step in steps['PipelineExecutionSteps']:
 
 if status == 'Succeeded':
     print('\nPipeline complete!')
+    print('Next: python 06a_deploy_endpoint.py && python 06_demo_simulation.py --user_id U0001')
 else:
-    raise RuntimeError(f'Pipeline failed with status: {status}. See step reasons above.')
+    raise RuntimeError(f'Pipeline failed: {status}')

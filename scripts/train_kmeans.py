@@ -4,13 +4,15 @@ Runs as a SageMaker Training Job.
 SageMaker automatically mounts:
   /opt/ml/input/data/train  — your training data from S3
   /opt/ml/model             — where you save model artifacts
+
+Auto-uploads user_clusters.csv to S3 after training.
 """
 
 import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, davies_bouldin_score
-import argparse, os, pickle, json
+import argparse, os, pickle, json, boto3
 
 
 FEATURES = [
@@ -18,14 +20,23 @@ FEATURES = [
     'unique_products', 'category_diversity', 'price_sensitivity'
 ]
 
+BUCKET           = 'sagemaker-product-ap-south-1'
+S3_CLUSTERS_KEY  = 'models/kmeans_artifacts/user_clusters.csv'
+
+
+def upload_to_s3(local_path: str, bucket: str, key: str):
+    """File ko S3 pe upload karo."""
+    s3 = boto3.client('s3')
+    s3.upload_file(local_path, bucket, key)
+    print(f'  ✅ Uploaded to s3://{bucket}/{key}')
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_clusters',    type=int, default=4)
-    parser.add_argument('--random_state',  type=int, default=42)
-    parser.add_argument('--max_iter',      type=int, default=300)
-    # SageMaker injects these environment variables automatically
-    parser.add_argument('--model-dir',  type=str, default=os.environ.get('SM_MODEL_DIR',  '/opt/ml/model'))
+    parser.add_argument('--n_clusters',   type=int, default=4)
+    parser.add_argument('--random_state', type=int, default=42)
+    parser.add_argument('--max_iter',     type=int, default=300)
+    parser.add_argument('--model-dir',  type=str, default=os.environ.get('SM_MODEL_DIR',    '/opt/ml/model'))
     parser.add_argument('--input-dir',  type=str, default=os.environ.get('SM_CHANNEL_TRAIN', '/opt/ml/input/data/train'))
     return parser.parse_args()
 
@@ -77,7 +88,7 @@ def train():
     freq_med  = profile['purchase_frequency'].median()
 
     for c in range(args.n_clusters):
-        high_spend = profile.loc[c, 'total_spend']       > spend_med
+        high_spend = profile.loc[c, 'total_spend']        > spend_med
         high_freq  = profile.loc[c, 'purchase_frequency'] > freq_med
         if high_spend and high_freq:
             persona_map[c] = 'Champion'
@@ -90,17 +101,17 @@ def train():
 
     print(f'\nPersona map: {persona_map}')
 
-    # ── Save artifacts ─────────────────────────────────────────────────────────
+    # ── Save artifacts locally (SageMaker model dir) ───────────────────────────
     os.makedirs(args.model_dir, exist_ok=True)
 
     # 1. Metrics JSON
     metrics = {
-        'silhouette_score':      round(sil,     4),
-        'davies_bouldin_score':  round(db,      4),
-        'inertia':               round(inertia, 1),
-        'n_clusters':            args.n_clusters,
-        'persona_map':           {str(k): v for k, v in persona_map.items()},
-        'cluster_profiles':      profile.round(3).to_dict()
+        'silhouette_score':     round(sil,     4),
+        'davies_bouldin_score': round(db,      4),
+        'inertia':              round(inertia, 1),
+        'n_clusters':           args.n_clusters,
+        'persona_map':          {str(k): v for k, v in persona_map.items()},
+        'cluster_profiles':     profile.round(3).to_dict()
     }
     with open(f'{args.model_dir}/metrics.json', 'w') as f:
         json.dump(metrics, f, indent=2)
@@ -108,13 +119,22 @@ def train():
     # 2. User → cluster mapping
     user_cluster_df = pd.DataFrame({'user_id': user_ids, 'cluster': final_labels})
     user_cluster_df['persona'] = user_cluster_df['cluster'].map(persona_map)
-    user_cluster_df.to_csv(f'{args.model_dir}/user_clusters.csv', index=False)
+    user_clusters_path = f'{args.model_dir}/user_clusters.csv'
+    user_cluster_df.to_csv(user_clusters_path, index=False)
 
     # 3. Trained KMeans model
     with open(f'{args.model_dir}/kmeans_model.pkl', 'wb') as f:
         pickle.dump(final_km, f)
 
     print(f'\nAll artifacts saved to {args.model_dir}')
+
+    # ── Auto-upload user_clusters.csv to S3 ───────────────────────────────────
+    print('\n── Uploading user_clusters.csv to S3 ──')
+    try:
+        upload_to_s3(user_clusters_path, BUCKET, S3_CLUSTERS_KEY)
+    except Exception as e:
+        print(f'  ⚠️  S3 upload failed: {e}')
+        print(f'  File is still saved locally at: {user_clusters_path}')
 
 
 if __name__ == '__main__':

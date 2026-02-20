@@ -9,12 +9,17 @@ A complete end-to-end recommendation engine using:
 
 ## Run Order
 ```
-01_data_creation.ipynb
-02_preprocessing_job.ipynb
-03_market_basket.ipynb
-04_kmeans_training.ipynb
-05_pipeline.ipynb
-06_demo_simulation.ipynb
+python
+01_data_creation.py
+02_preprocessing_job.py
+03_market_basket.py
+04_kmeans_training.py
+05_pipeline.py
+06_demo_simulation.py
+1. Deploy karo (ek baar):
+bashpython 06a_deploy_endpoint.py
+2. Jab endpoint ready ho, demo run karo:
+bashpython 06_demo_simulation.py --user_id U0007
 ```
 
 ## Setup

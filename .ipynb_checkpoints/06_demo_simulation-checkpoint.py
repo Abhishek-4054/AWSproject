@@ -1,56 +1,57 @@
 #!/usr/bin/env python
 # coding: utf-8
-
 # # Step 6 — Hybrid Recommender & Demo Simulation
-# Loads all artifacts, runs the HybridRecommender, and deploys a SageMaker endpoint.
-
-# In[ ]:
-
-
-#!/usr/bin/env python
-# coding: utf-8
-# # Step 6 — Hybrid Recommender & Demo Simulation
-# Loads all artifacts, runs the HybridRecommender, and deploys a SageMaker endpoint.
-
-#!/usr/bin/env python
-# coding: utf-8
-# # Step 6 — Hybrid Recommender & Demo Simulation
-# Loads all artifacts, runs the HybridRecommender, and deploys a SageMaker endpoint.
-
-#!/usr/bin/env python
-# coding: utf-8
-# # Step 6 — Hybrid Recommender (Interactive Mode)
-# Enter any User ID to get personalized product recommendations.
+# Loads all artifacts directly from S3 via boto3, runs the HybridRecommender.
 
 """
 scripts/demo_recommend.py
-Endpoint se cluster fetch karta hai + MBA rules se products recommend karta hai.
+S3 se artifacts load karta hai (boto3) + SageMaker endpoint se cluster fetch karta hai
++ MBA rules se products recommend karta hai.
 
 Usage:
-    python demo_recommend.py --user_id U0007
-    python demo_recommend.py --user_id U0007 --top_n 10
+    python 06_demo_simulation.py --user_id U0007
+    python 06_demo_simulation.py --user_id U0007 --top_n 10
 """
+
 import boto3
 import json
-import pandas as pd
+import io
 import argparse
+import pandas as pd
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 ENDPOINT_NAME = "hybrid-rec-endpoint"
 REGION        = "ap-south-1"
-USER_CLUSTERS = "/home/sagemaker-user/PRODUCT_RECOMMENDATION/models/kmeans_artifacts/user_clusters.csv"
-MBA_RULES     = "/home/sagemaker-user/PRODUCT_RECOMMENDATION/models/mba_rules.json"
-FEATURES      = [
+BUCKET        = "sagemaker-product-ap-south-1"
+
+S3_USER_CLUSTERS = "models/kmeans_artifacts/user_clusters.csv"
+S3_MBA_RULES     = "models/mba_rules.json"
+
+FEATURES = [
     'total_spend', 'purchase_frequency', 'avg_basket_value',
     'unique_products', 'category_diversity', 'price_sensitivity'
 ]
 
-# ── Load files ─────────────────────────────────────────────────────────────────
-df_users  = pd.read_csv(USER_CLUSTERS)
-with open(MBA_RULES) as f:
-    mba_rules = json.load(f)
+# ── Load artifacts from S3 ─────────────────────────────────────────────────────
+s3 = boto3.client("s3", region_name=REGION)
+
+def load_csv_from_s3(bucket: str, key: str) -> pd.DataFrame:
+    print(f"  [S3] Loading s3://{bucket}/{key} ...")
+    obj = s3.get_object(Bucket=bucket, Key=key)
+    return pd.read_csv(io.BytesIO(obj["Body"].read()))
+
+def load_json_from_s3(bucket: str, key: str) -> dict:
+    print(f"  [S3] Loading s3://{bucket}/{key} ...")
+    obj = s3.get_object(Bucket=bucket, Key=key)
+    return json.loads(obj["Body"].read().decode("utf-8"))
+
+print("\nLoading artifacts from S3...")
+df_users  = load_csv_from_s3(BUCKET, S3_USER_CLUSTERS)
+mba_rules = load_json_from_s3(BUCKET, S3_MBA_RULES)
+print("  ✅ Artifacts loaded.\n")
 
 
+# ── Endpoint ───────────────────────────────────────────────────────────────────
 def call_endpoint(feature_values: list) -> dict:
     """SageMaker endpoint invoke karo."""
     runtime  = boto3.client("sagemaker-runtime", region_name=REGION)
@@ -64,27 +65,24 @@ def call_endpoint(feature_values: list) -> dict:
     return json.loads(response["Body"].read().decode("utf-8"))
 
 
+# ── User features ──────────────────────────────────────────────────────────────
 def get_user_features(user_id: str) -> list:
-    """
-    user_clusters.csv mein features nahi hoti, isliye
-    cluster ke centroid values use karte hain as representative features.
-    Agar aapke paas kmeans_input.csv ho toh wahan se bhi le sakte hain.
-    """
+    """Persona ke basis pe representative feature values return karo."""
     row = df_users[df_users['user_id'] == user_id]
     if row.empty:
-        raise ValueError(f"user_id '{user_id}' not found.")
+        raise ValueError(f"user_id '{user_id}' not found in user_clusters.csv")
 
-    # Persona ke basis pe representative feature values
     persona = row['persona'].iloc[0]
     persona_features = {
         "Champion":       [2500.0, 25.0, 100.0, 20.0, 5.0, 0.3],
         "High-Spender":   [2000.0, 10.0, 200.0, 15.0, 4.0, 0.2],
-        "Frequent-Buyer": [800.0,  30.0, 26.0,  12.0, 3.0, 0.5],
-        "Occasional":     [200.0,  5.0,  40.0,  5.0,  2.0, 0.8],
+        "Frequent-Buyer": [800.0,  30.0,  26.0, 12.0, 3.0, 0.5],
+        "Occasional":     [200.0,   5.0,  40.0,  5.0, 2.0, 0.8],
     }
     return persona_features.get(persona, [500.0, 12.0, 41.7, 8.0, 3.0, 0.6])
 
 
+# ── Recommendations ────────────────────────────────────────────────────────────
 def get_recommendations(cluster_id: int, persona: str, top_n: int = 5) -> list:
     """MBA rules se top N products recommend karo persona ke basis pe."""
     persona_weights = {
@@ -98,8 +96,8 @@ def get_recommendations(cluster_id: int, persona: str, top_n: int = 5) -> list:
     scored = {}
     for antecedent, rules in mba_rules.items():
         for rule in rules:
-            product      = rule['product']
-            weighted     = rule['confidence'] * weights['confidence'] + rule['lift'] * weights['lift']
+            product  = rule['product']
+            weighted = rule['confidence'] * weights['confidence'] + rule['lift'] * weights['lift']
             if product not in scored or weighted > scored[product]['score']:
                 scored[product] = {
                     "product":    product,
@@ -111,17 +109,17 @@ def get_recommendations(cluster_id: int, persona: str, top_n: int = 5) -> list:
     return sorted(scored.values(), key=lambda x: x['score'], reverse=True)[:top_n]
 
 
+# ── Demo ───────────────────────────────────────────────────────────────────────
 def demo(user_id: str, top_n: int = 5):
     print(f"\n{'='*55}")
     print(f"  PRODUCT RECOMMENDATION DEMO")
     print(f"{'='*55}")
 
-    # Step 1: User info from CSV
+    # Step 1: User info
     row = df_users[df_users['user_id'] == user_id]
     if row.empty:
         print(f"  ❌ user_id '{user_id}' not found in user_clusters.csv")
         return
-    persona_from_csv = row['persona'].iloc[0]
 
     # Step 2: Feature values
     feature_values = get_user_features(user_id)

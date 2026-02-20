@@ -1,13 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
-
 # # Step 2 — Feature Engineering (SageMaker Processing Job)
 # Runs `scripts/preprocessing.py` on AWS managed infrastructure.
 
-# In[ ]:
-
-
-#!/usr/bin/env python
 import sagemaker, boto3
 from sagemaker.sklearn.processing import SKLearnProcessor
 from sagemaker.processing import ProcessingInput, ProcessingOutput
@@ -26,7 +21,7 @@ sklearn_processor = SKLearnProcessor(
 )
 
 sklearn_processor.run(
-    code='../scripts/preprocessing.py',
+    code='./scripts/preprocessing.py',
     inputs=[
         ProcessingInput(
             source=f's3://{BUCKET}/data/raw/',
